@@ -182,7 +182,7 @@ Provide detailed information about your dataset:
    - Units of measurement
    - Coding schemes (e.g., 1 = Yes, 0 = No)
 3. **In your proposal document**, include the output of:
-```r
+r
 library(tidyverse)
 glimpse(your_data)
 
@@ -190,7 +190,114 @@ glimpse(your_data)
 
 library(skimr)
 skim(your_data)
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 8, fig.height = 5)
 ```
+
+```{r load-packages}
+library(tidyverse)
+library(scales)
+```
+
+```{r load-data}
+airport_2025 <- read_csv("data/airport_traffic_2025.csv")
+airport_2026 <- read_csv("data/airport_traffic_2026.csv")
+
+# Combine both years into one dataset for analysis
+airport <- bind_rows(airport_2025, airport_2026)
+```
+
+```{r glimpse-data}
+glimpse(airport)
+```
+
+```{r summary-stats}
+# Overall summary of daily flight totals
+airport |>
+  summarize(
+    n_records = n(),
+    n_airports = n_distinct(APT_ICAO),
+    n_countries = n_distinct(STATE_NAME),
+    mean_daily_flights = mean(FLT_TOT_1, na.rm = TRUE),
+    median_daily_flights = median(FLT_TOT_1, na.rm = TRUE),
+    sd_daily_flights = sd(FLT_TOT_1, na.rm = TRUE),
+    min_daily_flights = min(FLT_TOT_1, na.rm = TRUE),
+    max_daily_flights = max(FLT_TOT_1, na.rm = TRUE)
+  )
+```
+
+```{r country-summary}
+# Top 10 countries by average daily flights
+airport |>
+  group_by(STATE_NAME) |>
+  summarize(
+    n_records = n(),
+    mean_daily_flights = mean(FLT_TOT_1, na.rm = TRUE),
+    median_daily_flights = median(FLT_TOT_1, na.rm = TRUE)
+  ) |>
+  arrange(desc(mean_daily_flights)) |>
+  slice_head(n = 10)
+```
+
+```{r monthly-summary}
+# Average daily flights by the month
+airport |>
+  group_by(MONTH_NUM, MONTH_MON) |>
+  summarize(
+    mean_daily_flights = mean(FLT_TOT_1, na.rm = TRUE),
+    median_daily_flights = median(FLT_TOT_1, na.rm = TRUE)
+  ) |>
+  arrange(MONTH_NUM)
+```
+
+
+```{r viz-monthly-trend, fig.cap="Average daily flight volume by month, aggregated across all airports."}
+airport |>
+  mutate(MONTH_MON = fct_reorder(MONTH_MON, MONTH_NUM)) |>
+  group_by(MONTH_MON, YEAR) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE)) |>
+  ggplot(aes(x = MONTH_MON, y = mean_flights, 
+             group = factor(YEAR), color = factor(YEAR))) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Average Daily Flight Volume by Month",
+    subtitle = "Summer peak visible across both years",
+    x = "Month",
+    y = "Mean daily flights per airport",
+    color = "Year"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+```{r viz-country-boxplot, fig.cap="Distribution of daily flight totals for the 10 countries with the highest mean traffic."}
+top_countries <- airport |>
+  group_by(STATE_NAME) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE)) |>
+  arrange(desc(mean_flights)) |>
+  slice_head(n = 10) |>
+  pull(STATE_NAME)
+
+airport |>
+  filter(STATE_NAME %in% top_countries) |>
+  mutate(STATE_NAME = fct_reorder(STATE_NAME, FLT_TOT_1, .fun = median)) |>
+  ggplot(aes(x = STATE_NAME, y = FLT_TOT_1)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.6, outlier.alpha = 0.1) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Daily Flight Totals by Country (Top 10 by Mean Traffic)",
+    subtitle = "Boxes show variation within each country's airports",
+    x = NULL,
+    y = "Daily flight total"
+  ) +
+  theme_minimal()
+```
+
 
 **This shows:**
 
