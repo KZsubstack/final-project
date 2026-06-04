@@ -335,4 +335,3 @@ class: center, middle, inverse
 
 # Thank you
 
-### Questions?
