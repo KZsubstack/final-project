@@ -156,27 +156,26 @@ would barely move.
 
 **Seasonal line plot.**
 
-```{r viz-monthly-trend, fig.cap = "Mean daily flights per airport by month, split by calendar year."}
+```{r viz-monthly-trend, fig.cap = "Mean daily flights per airport by month, averaged across all airport-days."}
 airport |>
   mutate(MONTH_MON = fct_reorder(MONTH_MON, MONTH_NUM)) |>
-  group_by(MONTH_MON, YEAR) |>
+  group_by(MONTH_MON) |>
   summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = MONTH_MON, y = mean_flights,
-             group = factor(YEAR), color = factor(YEAR))) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
+  ggplot(aes(x = MONTH_MON, y = mean_flights, group = 1)) +
+  geom_line(linewidth = 1, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
   labs(
     title = "Average daily flight volume by month",
-    subtitle = "Summer peak visible across both years",
-    x = "Month", y = "Mean daily flights per airport", color = "Year"
+    subtitle = "Winter low, mid-summer peak",
+    x = "Month", y = "Mean daily flights per airport"
   ) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
+  theme_minimal(base_size = 12)
 ```
 
-The two yearly traces overlap closely outside summer, which suggests
-the seasonal pattern is stable and not an artifact of one unusual
-year.
+Flights rise from a January low near 120 per airport to a July and
+August peak near 170, then fall through autumn. The data covers all
+of 2025 plus January 2026, so this shape comes from the twelve months
+of 2025.
 
 **Summary by country (top 10 by mean traffic).**
 

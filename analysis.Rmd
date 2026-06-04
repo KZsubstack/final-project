@@ -3,13 +3,13 @@ title: "Full Analysis: Seasonality and Geography of Airport Flight Traffic"
 author: "Kaden Zhu"
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
-  pdf_document:
-    toc: true
   html_document:
     toc: true
     toc_float: true
     code_folding: show
     theme: flatly
+  pdf_document:
+    toc: true
 ---
 
 ```{r setup, include=FALSE}
@@ -68,8 +68,8 @@ airport <- bind_rows(airport_2025, airport_2026) |>
 dim(airport)
 ```
 
-The combined frame holds every airport-day record from both years
-side by side. Converting `MONTH_MON` to an ordered factor keeps the
+The combined frame holds every airport-day record from the 2025 and
+2026 files side by side. Converting `MONTH_MON` to an ordered factor keeps the
 calendar order on every plot and in the regression. Treating `YEAR`
 as a factor with two levels matches what the linear model needs.
 
@@ -94,9 +94,16 @@ tibble(
 I read missingness first because anything substantial in `FLT_TOT_1`
 would change the interpretation of every summary statistic below.
 The record counts confirm the dataset's scale: hundreds of airports
-across a couple of years gives us a sample large enough to fit a
+across more than a year gives us a sample large enough to fit a
 regression with airport-level fixed effects without running out of
 degrees of freedom.
+
+One detail shapes the year comparison. The 396 dates run from January
+2025 through January 2026, so 2025 covers all twelve months while
+2026 contributes January alone. January carries roughly twice the
+records of any other month for that reason. The seasonal pattern
+below comes from the twelve months of 2025. The year coefficient in
+the regression compares January 2026 to January 2025.
 
 # 3. Exploratory data analysis
 
@@ -168,7 +175,7 @@ airport |>
   kable(digits = 1, caption = "Daily flight totals by month.")
 ```
 
-Across both years the monthly means rise from a winter low through
+Across the calendar the monthly means rise from a winter low through
 spring, crest in mid-summer, and fall back through autumn. The medians track the means too. The seasonal pattern is not an
 artifact of the right tail.
 
@@ -204,26 +211,25 @@ the regression is built to address.
 
 ```{r plot-month}
 airport |>
-  group_by(MONTH_MON, YEAR) |>
+  group_by(MONTH_MON) |>
   summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = MONTH_MON, y = mean_flights,
-             group = YEAR, color = YEAR)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
+  ggplot(aes(x = MONTH_MON, y = mean_flights, group = 1)) +
+  geom_line(linewidth = 1, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
   labs(
     title = "Average daily flight volume by month",
-    subtitle = "Same seasonal shape in both calendar years",
+    subtitle = "Winter low, mid-summer peak",
     x = "Month",
-    y = "Mean daily flights per airport",
-    color = "Year"
+    y = "Mean daily flights per airport"
   ) +
   theme_minimal(base_size = 12)
 ```
 
-The two yearly lines move together across the calendar, so the
-seasonal effect is reproducible rather than year-specific. Where the
-lines diverge by a few flights per airport, that is the size of the
-year effect we will recover in the regression.
+Flights climb from a January low near 120 per airport to a July and
+August peak near 170, then fall back through autumn. The summer peak
+runs roughly 50 flights per day above the winter floor at the average
+airport. This averages over all airport-days, so the shape reflects
+the calendar rather than any single hub.
 
 ## 3.4 Country comparison
 
@@ -432,12 +438,12 @@ Helsinki. Their high averages describe two busy hubs, not two busy
 countries. Once airport enters the model, those country signals fold
 into the airport fixed effects and lose meaning.
 
-The year coefficient compares 2026 to 2025 with month and airport held
-constant. The effect is small and sensitive to scale. In the level
-model, 2026 runs about 2 flights per day above 2025. In the log model,
-2026 runs about 2 percent below. The two specifications split on sign
-and agree on size, close to zero. In practical terms, 2025 and 2026
-look alike.
+The data carries only January for 2026, so the year coefficient
+compares January 2026 to January 2025 with airport held constant. The
+effect is small and sensitive to scale. The level model puts 2026
+about 2 flights per day above 2025. The log model puts it about 2
+percent below. Both sit close to zero, so the two Januaries look much
+alike.
 
 # 6. Limitations
 
@@ -453,11 +459,11 @@ at a cargo hub and a 200-movement day at a tourist airport count the
 same. Separating them needs data the EUROCONTROL daily extract does
 not provide.
 
-Two years limits the seasonal claim. The pattern repeats across 2025
-and 2026, which rules out a one-year fluke. Two years still does not
-separate season from year-specific shocks. A strike, a volcanic
-closure, or a geopolitical event in one summer would enter the model
-as a month or year effect with no warning sign.
+The data covers one full year. 2025 runs January to December, and
+2026 adds January alone. The seasonal shape rests on 2025, so I cannot
+show the pattern repeats across years. A one-off event in 2025, a
+strike, a volcanic closure, or a geopolitical shock, would enter the
+model as a month effect with no way to flag it.
 
 The design is observational. Airport fixed effects remove
 airport-level confounding, not all confounding. The data supports one

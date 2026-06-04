@@ -1,8 +1,8 @@
 ---
 title: "Seasonality and Geography of Airport Flight Traffic"
 subtitle: "Math 225 Final Project"
-author: "[your name]"
-institute: "University of Edinburgh"
+author: "Kaden Zhu"
+institute: "Santiago Canyon College"
 date: "`r Sys.Date()`"
 output:
   xaringan::moon_reader:
@@ -22,6 +22,16 @@ library(broom)
 library(knitr)
 library(xaringanthemer)
 library(scales)
+library(fixest)   # install.packages("fixest")
+
+# Tidy coefficients from either an lm or a fixest object.
+tidy_coefs <- function(m) {
+  if (inherits(m, "fixest")) {
+    ct <- fixest::coeftable(m)
+    tibble(term = rownames(ct), estimate = ct[, 1],
+           std.error = ct[, 2], statistic = ct[, 3], p.value = ct[, 4])
+  } else broom::tidy(m)
+}
 ```
 
 ```{r setup, include=FALSE}
@@ -57,14 +67,14 @@ top_countries <- airport |>
   slice_max(mean_flights, n = 10) |>
   pull(STATE_NAME)
 
-model1 <- lm(FLT_TOT_1 ~ MONTH_MON + STATE_NAME + YEAR, data = airport)
-model2 <- lm(FLT_TOT_1 ~ MONTH_MON + APT_ICAO + YEAR, data = airport)
-model2_log <- lm(log(FLT_TOT_1 + 1) ~ MONTH_MON + APT_ICAO + YEAR, data = airport)
+model1     <- lm(FLT_TOT_1 ~ MONTH_MON + STATE_NAME + YEAR, data = airport)
+model2     <- feols(FLT_TOT_1 ~ MONTH_MON + YEAR | APT_ICAO, data = airport)
+model2_log <- feols(log(FLT_TOT_1 + 1) ~ MONTH_MON + YEAR | APT_ICAO, data = airport)
 
 m1_r2 <- round(glance(model1)$r.squared, 3)
-m2_r2 <- round(glance(model2)$r.squared, 3)
-jul_pct <- round((exp(tidy(model2_log) |> filter(term == "MONTH_MONJUL") |> pull(estimate)) - 1) * 100, 1)
-aug_pct <- round((exp(tidy(model2_log) |> filter(term == "MONTH_MONAUG") |> pull(estimate)) - 1) * 100, 1)
+m2_r2 <- round(unname(fixest::r2(model2, type = "r2")), 3)
+jul_pct <- round((exp(coef(model2_log)[["MONTH_MONJUL"]]) - 1) * 100, 1)
+aug_pct <- round((exp(coef(model2_log)[["MONTH_MONAUG"]]) - 1) * 100, 1)
 ```
 
 ```{r}
@@ -93,9 +103,9 @@ expected seasonal demand.
 
 --
 
-"Country effects" in aviation data are notorious for being
-hub-composition effects in disguise. If we cannot tell those apart,
-every comparison across countries is contaminated.
+"Country effects" in aviation data are often hub-composition effects
+in disguise, not real country differences. Fail to separate them and
+every cross-country comparison is contaminated.
 
 --
 
@@ -111,14 +121,14 @@ class: inverse, center, middle
 
 ---
 
-# Daily airport traffic, 2025–2026
+# Daily airport traffic: 2025 and early 2026
 
 .pull-left[
 - Kaggle release of EUROCONTROL-style daily airport traffic
 - `r format(n_rec, big.mark = ",")` airport-day records
 - `r n_apts` airports across `r n_states` countries
-- Two full calendar years
-- Outcome: `FLT_TOT_1` — total IFR flight movements per day
+- All of 2025 plus January 2026
+- Outcome: `FLT_TOT_1`, total IFR flight movements per day
 - Predictors: month, country, airport ICAO, year
 ]
 
@@ -160,18 +170,18 @@ class: inverse, center, middle
 
 ```{r slide-month, out.width = "85%", fig.asp = 0.5}
 airport |>
-  group_by(MONTH_MON, YEAR) |>
+  group_by(MONTH_MON) |>
   summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = MONTH_MON, y = mean_flights, group = YEAR, color = YEAR)) +
-  geom_line(linewidth = 1.2) +
-  geom_point(size = 3) +
-  labs(x = "Month", y = "Mean daily flights per airport", color = "Year") +
-  theme_minimal(base_size = 14) +
-  theme(legend.position = "bottom")
+  ggplot(aes(x = MONTH_MON, y = mean_flights, group = 1)) +
+  geom_line(linewidth = 1.2, color = "#23395b") +
+  geom_point(size = 3, color = "#23395b") +
+  labs(x = "Month", y = "Mean daily flights per airport") +
+  theme_minimal(base_size = 14)
 ```
 
-Both years trace nearly the same shape — peaks in June–August,
-trough in January–February.
+Flights peak from June to August and bottom out in January and
+February. The summer peak runs about 50 flights per day above the
+winter floor.
 
 ---
 
@@ -226,8 +236,8 @@ contrast is the point:
 
 ```{r slide-coefs, out.width = "85%", fig.asp = 0.5}
 bind_rows(
-  tidy(model1) |> mutate(model = "Model 1 (no airport control)"),
-  tidy(model2) |> mutate(model = "Model 2 (airport fixed effects)")
+  tidy_coefs(model1) |> mutate(model = "Model 1 (no airport control)"),
+  tidy_coefs(model2) |> mutate(model = "Model 2 (airport fixed effects)")
 ) |>
   filter(str_starts(term, "MONTH_MON")) |>
   mutate(month = str_remove(term, "MONTH_MON"),
@@ -241,8 +251,8 @@ bind_rows(
   theme(legend.position = "bottom")
 ```
 
-The two lines sit on top of each other. Seasonality is genuine, not
-a hub-composition artifact.
+The two lines sit on top of each other. Seasonality is real, not a
+hub-composition artifact.
 
 ---
 
@@ -281,7 +291,7 @@ class: inverse, center, middle
 
 # Limitations
 
-- **Geographic scope.** EUROCONTROL coverage — findings generalize to
+- **Geographic scope.** EUROCONTROL coverage. Findings generalize to
   European IFR traffic, not to global aviation.
 
 --
@@ -291,9 +301,9 @@ class: inverse, center, middle
 
 --
 
-- **Two years.** Enough to confirm a stable seasonal pattern, not
-  enough to disentangle seasonality from one-off shocks like
-  strikes or weather.
+- **One full year.** 2025 covers all months; 2026 adds only January.
+  The seasonal claim rests on 2025, so one-off shocks can't be
+  separated from it.
 
 --
 
@@ -304,8 +314,8 @@ class: inverse, center, middle
 
 # Takeaways
 
-1. Daily flight traffic is **seasonally driven**, peaking June–August
-   at roughly `r jul_pct`% above January at the typical airport.
+1. Daily flight traffic is **seasonally driven**, peaking from June to
+   August at roughly `r jul_pct`% above January at the typical airport.
 
 --
 
@@ -316,7 +326,7 @@ class: inverse, center, middle
 --
 
 3. The right modeling choice was to use **airport as a fixed effect**
-   rather than country + airport together — doing the latter would
+   rather than country + airport together. Doing the latter would
    have produced perfectly collinear predictors.
 
 ---

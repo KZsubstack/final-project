@@ -51,8 +51,8 @@ from the start to separate the two.
 
 The data is a Kaggle release of EUROCONTROL-style airport traffic
 statistics: one row per airport per day, recording total
-instrument-flight-rules movements, across the 2025 and 2026 calendar
-years. After combining the two yearly files the sample covers
+instrument-flight-rules movements, across 2025 and into January
+2026. The two files combine into one frame covering
 `r n_apts` airports across `r n_states` countries, weighted heavily
 toward Europe with a few neighboring states. The outcome variable is
 `FLT_TOT_1`, daily total movements. The predictors of interest are
@@ -63,11 +63,11 @@ Exploratory work came first. A histogram of the outcome showed a
 strong right skew: the typical airport-day runs around `r median_daily`
 movements, but the mean is `r mean_daily`, pulled upward by a handful
 of mega-hubs running well over a thousand a day. A month-by-month line
-plot, drawn separately for each year, showed a clear and reproducible
-seasonal arc: traffic climbs from a winter low through spring, crests
-in mid-summer, and falls back through autumn, with the two years
-tracing almost identical shapes. A bar chart of the fifteen busiest
-airports made the central confound visible before any model was fit.
+plot showed a clear seasonal arc: traffic climbs from a winter low
+through spring, crests in mid-summer near 170 flights per airport, and
+falls back through autumn to a winter floor near 120. A bar chart of
+the fifteen busiest airports made the central confound visible before
+any model was fit.
 A small set of hubs sits far above everything else, and each one is
 the reason its country looks busy in a country-level comparison.
 
@@ -105,10 +105,10 @@ mostly European, so the findings describe EUROCONTROL airspace
 rather than global aviation. The outcome lumps passenger, cargo,
 business, and general aviation into one daily count, so the analysis
 cannot speak to the mode mix behind the seasonal pattern even though
-the summer peak strongly suggests leisure travel. Two calendar years
-confirm a stable seasonal pattern but cannot separate seasonality from
-one-off events such as strikes or weather disruptions. And the data is
-observational, so even with airport fixed effects the right verb is
+the summer peak strongly suggests leisure travel. The data spans one
+full year, 2025, plus January 2026, so the seasonal shape rests on
+2025 alone and a one-off event that year would read as a month effect.
+And the data is observational, so even with airport fixed effects the right verb is
 "associated with," not "caused by." A natural next step would be
 splitting the outcome into arrivals and departures and adding
 country-level covariates like tourism share and holiday calendars,
@@ -116,7 +116,7 @@ which the current model cannot use because airport absorbs country.
 
 ## Presentation
 
-Presentation can be found [here](presentation/presentation.html).
+Our presentation can be found [here](presentation/presentation.html).
 
 ## Data
 
