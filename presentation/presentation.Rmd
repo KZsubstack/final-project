@@ -1,0 +1,328 @@
+---
+title: "Seasonality and Geography of Airport Flight Traffic"
+subtitle: "Math 225 Final Project"
+author: "[your name]"
+institute: "University of Edinburgh"
+date: "`r Sys.Date()`"
+output:
+  xaringan::moon_reader:
+    css: xaringan-themer.css
+    lib_dir: libs
+    nature:
+      ratio: "16:9"
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+---
+
+```{r load-packages, include = FALSE}
+# Add any additional packages you need to this chunk
+library(tidyverse)
+library(broom)
+library(knitr)
+library(xaringanthemer)
+library(scales)
+```
+
+```{r setup, include=FALSE}
+# For better figure resolution
+knitr::opts_chunk$set(
+  fig.retina = 3, dpi = 300,
+  fig.width = 6, fig.asp = 0.618,
+  out.width = "80%",
+  echo = FALSE, warning = FALSE, message = FALSE
+)
+```
+
+```{r load-data, include=FALSE}
+# Load your data here
+airport <- bind_rows(
+  read_csv("../data/airport_traffic_2025.csv"),
+  read_csv("../data/airport_traffic_2026.csv")
+) |>
+  mutate(
+    MONTH_MON = fct_reorder(MONTH_MON, MONTH_NUM),
+    YEAR = factor(YEAR)
+  )
+
+n_rec <- nrow(airport)
+n_apts <- n_distinct(airport$APT_ICAO)
+n_states <- n_distinct(airport$STATE_NAME)
+mean_daily <- round(mean(airport$FLT_TOT_1, na.rm = TRUE), 0)
+median_daily <- round(median(airport$FLT_TOT_1, na.rm = TRUE), 0)
+
+top_countries <- airport |>
+  group_by(STATE_NAME) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  slice_max(mean_flights, n = 10) |>
+  pull(STATE_NAME)
+
+model1 <- lm(FLT_TOT_1 ~ MONTH_MON + STATE_NAME + YEAR, data = airport)
+model2 <- lm(FLT_TOT_1 ~ MONTH_MON + APT_ICAO + YEAR, data = airport)
+model2_log <- lm(log(FLT_TOT_1 + 1) ~ MONTH_MON + APT_ICAO + YEAR, data = airport)
+
+m1_r2 <- round(glance(model1)$r.squared, 3)
+m2_r2 <- round(glance(model2)$r.squared, 3)
+jul_pct <- round((exp(tidy(model2_log) |> filter(term == "MONTH_MONJUL") |> pull(estimate)) - 1) * 100, 1)
+aug_pct <- round((exp(tidy(model2_log) |> filter(term == "MONTH_MONAUG") |> pull(estimate)) - 1) * 100, 1)
+```
+
+```{r}
+style_xaringan(
+  title_slide_background_image = "img/confetti.jpg"
+)
+```
+
+
+class: center, middle
+
+## Does seasonality and country drive daily airport flight traffic, or is it really about which hubs are in the sample?
+
+---
+
+class: inverse, center, middle
+
+# The question
+
+---
+
+# Two reasons it matters
+
+Airports plan staffing, runway slots, and ground capacity around
+expected seasonal demand.
+
+--
+
+"Country effects" in aviation data are notorious for being
+hub-composition effects in disguise. If we cannot tell those apart,
+every comparison across countries is contaminated.
+
+--
+
+So the question is built around a contrast: is the seasonal signal
+real *within* airports, and how much of the apparent country effect
+is really just *where the hubs live*?
+
+---
+
+class: inverse, center, middle
+
+# The data
+
+---
+
+# Daily airport traffic, 2025–2026
+
+.pull-left[
+- Kaggle release of EUROCONTROL-style daily airport traffic
+- `r format(n_rec, big.mark = ",")` airport-day records
+- `r n_apts` airports across `r n_states` countries
+- Two full calendar years
+- Outcome: `FLT_TOT_1` — total IFR flight movements per day
+- Predictors: month, country, airport ICAO, year
+]
+
+.pull-right[
+Median airport-day:
+### `r median_daily` movements
+
+Mean airport-day:
+### `r mean_daily` movements
+
+The gap between them is the right tail of mega-hubs.
+]
+
+---
+
+# The shape of the outcome
+
+```{r slide-hist, out.width = "85%", fig.asp = 0.5}
+ggplot(airport, aes(x = FLT_TOT_1)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "white") +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(x = "Daily flight total", y = "Number of airport-days") +
+  theme_minimal(base_size = 14)
+```
+
+Strong right skew. A few hubs are very busy, most airports are quiet.
+This is why airport identity has to be a control.
+
+---
+
+class: inverse, center, middle
+
+# Exploratory patterns
+
+---
+
+# The seasonal pattern
+
+```{r slide-month, out.width = "85%", fig.asp = 0.5}
+airport |>
+  group_by(MONTH_MON, YEAR) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = MONTH_MON, y = mean_flights, group = YEAR, color = YEAR)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  labs(x = "Month", y = "Mean daily flights per airport", color = "Year") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+```
+
+Both years trace nearly the same shape — peaks in June–August,
+trough in January–February.
+
+---
+
+# The confound
+
+```{r slide-airports, out.width = "85%", fig.asp = 0.55}
+airport |>
+  group_by(APT_ICAO, STATE_NAME) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  slice_max(mean_flights, n = 15) |>
+  mutate(APT_ICAO = fct_reorder(APT_ICAO, mean_flights)) |>
+  ggplot(aes(x = APT_ICAO, y = mean_flights, fill = STATE_NAME)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(x = "Airport (ICAO)", y = "Mean daily flights", fill = "Country") +
+  theme_minimal(base_size = 12)
+```
+
+Fifteen hubs do most of the heavy lifting. Country averages are
+largely a story about which of these airports a country hosts.
+
+---
+
+class: inverse, center, middle
+
+# Modeling
+
+---
+
+# Two regressions, on purpose
+
+**Model 1** (naive):
+$$\text{FLT\_TOT\_1} \sim \text{month} + \text{country} + \text{year}$$
+
+**Model 2** (controlled):
+$$\text{FLT\_TOT\_1} \sim \text{month} + \text{airport} + \text{year}$$
+
+--
+
+Airport is nested in country, so model 2 absorbs country. The
+contrast is the point:
+
+- If month is real seasonality, its coefficients **stay stable**
+  across both models.
+- If country is a hub-composition story, country's apparent effect
+  in model 1 **disappears** when airport enters in model 2.
+
+---
+
+# Month effects are stable
+
+```{r slide-coefs, out.width = "85%", fig.asp = 0.5}
+bind_rows(
+  tidy(model1) |> mutate(model = "Model 1 (no airport control)"),
+  tidy(model2) |> mutate(model = "Model 2 (airport fixed effects)")
+) |>
+  filter(str_starts(term, "MONTH_MON")) |>
+  mutate(month = str_remove(term, "MONTH_MON"),
+         month = fct_reorder(month, match(month, levels(airport$MONTH_MON)))) |>
+  ggplot(aes(x = month, y = estimate, color = model, group = model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  labs(x = "Month", y = "Change in daily flights vs January", color = NULL) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+```
+
+The two lines sit on top of each other. Seasonality is genuine, not
+a hub-composition artifact.
+
+---
+
+# In plain numbers
+
+On the log scale, holding airport and year fixed:
+
+.pull-left[
+### July
+**`r jul_pct`%**
+higher than January at the average airport
+]
+
+.pull-right[
+### August  
+**`r aug_pct`%**
+higher than January at the average airport
+]
+
+--
+
+R² jumps from **`r m1_r2`** in model 1 to **`r m2_r2`** in model 2.
+
+Most of the increase is the airport fixed effects: most variation in
+daily flights is *between* airports, not *across* months.
+Seasonality is real but small in absolute terms compared to who
+you are.
+
+---
+
+class: inverse, center, middle
+
+# Limitations and conclusions
+
+---
+
+# Limitations
+
+- **Geographic scope.** EUROCONTROL coverage — findings generalize to
+  European IFR traffic, not to global aviation.
+
+--
+
+- **Aggregated outcome.** Daily totals do not separate passenger,
+  cargo, business, and general aviation.
+
+--
+
+- **Two years.** Enough to confirm a stable seasonal pattern, not
+  enough to disentangle seasonality from one-off shocks like
+  strikes or weather.
+
+--
+
+- **Observational data.** Even with airport fixed effects, this
+  describes associations rather than causes.
+
+---
+
+# Takeaways
+
+1. Daily flight traffic is **seasonally driven**, peaking June–August
+   at roughly `r jul_pct`% above January at the typical airport.
+
+--
+
+2. **Apparent country differences are largely a hub-composition
+   story.** Once airport identity is controlled, the country signal
+   is absorbed.
+
+--
+
+3. The right modeling choice was to use **airport as a fixed effect**
+   rather than country + airport together — doing the latter would
+   have produced perfectly collinear predictors.
+
+---
+
+class: center, middle, inverse
+
+# Thank you
+
+### Questions?

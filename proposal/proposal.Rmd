@@ -1,0 +1,285 @@
+---
+title: "Project proposal"
+author: "Kaden Zhu"
+output: github_document
+---
+
+```{r load-packages, message = FALSE}
+library(tidyverse)
+library(broom)
+library(scales)
+library(skimr)
+```
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.width = 8, fig.height = 4.5
+)
+```
+
+```{r load-data, message = FALSE}
+airport_2025 <- read_csv("../data/airport_traffic_2025.csv")
+airport_2026 <- read_csv("../data/airport_traffic_2026.csv")
+
+airport <- bind_rows(airport_2025, airport_2026)
+```
+
+## 1. Introduction
+
+This project asks whether month of year and country of origin are
+associated with daily flight traffic at international airports, and
+whether those associations survive once we account for which specific
+airports are in the data. The dataset compiles daily arrival and
+departure counts for 331 airports across 2025 and 2026. Coverage is
+heaviest in Europe but stretches to a handful of neighboring states
+including Türkiye and Israel. The records come from a Kaggle release
+of EUROCONTROL airport traffic statistics, which are official
+instrument-flight-rules counts rather than estimates or scraped
+figures.
+
+The question matters because seasonality and country mix are the two
+levers most often invoked when airports plan staffing, when tourism
+boards model arrivals, and when emissions analysts build aviation
+inventories. If summer really is a uniform European peak, that
+supports one kind of planning. If "summer" is mostly a story about a
+handful of Mediterranean hubs while northern Europe stays flat, that
+is a very different story even though the marginal monthly average
+might look the same.
+
+Each row of the dataset is a single airport-day. The response variable
+is `FLT_TOT_1`, the total IFR flight movements at that airport on that
+date. The predictors of interest are `MONTH_MON` (month abbreviation)
+and `STATE_NAME` (country). `APT_ICAO` (the airport itself) and `YEAR`
+enter as controls.
+
+## 2. Data
+
+```{r glimpse-data}
+glimpse(airport)
+```
+
+```{r skim-missing}
+airport |>
+  select(APT_ICAO, STATE_NAME, MONTH_MON, YEAR, FLT_TOT_1) |>
+  skim()
+```
+
+The `skim()` output confirms the variable types and gives a first read
+on missingness in the columns I rely on. Anything above a fraction of
+a percent missing in `FLT_TOT_1` would be worth investigating before
+fitting the regression; otherwise I treat occasional gaps as
+ignorable. A full data dictionary lives in `data/README.md`.
+
+## 3. Data analysis plan
+
+**Variables.** The outcome (Y) is `FLT_TOT_1`, daily total IFR flight
+movements. The predictors of interest (X) are `MONTH_MON`, the
+seasonal signal, and `STATE_NAME`, the geographic signal. `APT_ICAO`
+(airport) and `YEAR` enter as controls. Including airport is what lets
+me separate "month matters" from "the busy airports happen to be in
+our sample."
+
+**Comparison groups.** The natural comparisons are across the twelve
+calendar months and across countries. I restrict country comparisons
+to the top ten countries by mean traffic so group sizes are roughly
+comparable and no inference is driven by a country with only one or
+two airports in the sample.
+
+### Preliminary exploratory analysis
+
+**Overall summary of the outcome.**
+
+```{r summary-overall}
+airport |>
+  summarize(
+    n_records = n(),
+    n_airports = n_distinct(APT_ICAO),
+    n_countries = n_distinct(STATE_NAME),
+    mean_daily = mean(FLT_TOT_1, na.rm = TRUE),
+    median_daily = median(FLT_TOT_1, na.rm = TRUE),
+    sd_daily = sd(FLT_TOT_1, na.rm = TRUE),
+    min_daily = min(FLT_TOT_1, na.rm = TRUE),
+    max_daily = max(FLT_TOT_1, na.rm = TRUE)
+  )
+```
+
+The mean sits well above the median, and the maximum is many times the
+mean. That tells me the outcome is right-skewed: a small group of
+mega-hubs do many more movements per day than the typical airport in
+the sample. This matters for modeling because plain linear regression
+assumes roughly symmetric residuals, so I check the distribution
+before committing to a transformation.
+
+**Distribution of the outcome.**
+
+```{r viz-outcome-distribution, fig.cap = "Daily flight totals across all airport-days. Heavy right tail."}
+ggplot(airport, aes(x = FLT_TOT_1)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "white") +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Daily flight totals are heavily right-skewed",
+    x = "Daily flight total (FLT_TOT_1)",
+    y = "Number of airport-days"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+Most airport-days sit in the low-to-mid hundreds of movements, with a
+long tail running into the low thousands at the biggest hubs. I keep
+`FLT_TOT_1` on its original scale for descriptive statistics so the
+units stay intuitive, but I plan to consider a `log(FLT_TOT_1 + 1)`
+transformation for the regression if residual diagnostics show the
+skew is causing trouble.
+
+**Summary by month.**
+
+```{r summary-by-month}
+airport |>
+  group_by(MONTH_NUM, MONTH_MON) |>
+  summarize(
+    n = n(),
+    mean_daily = mean(FLT_TOT_1, na.rm = TRUE),
+    median_daily = median(FLT_TOT_1, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(MONTH_NUM)
+```
+
+The means climb from a winter low through spring and crest in
+mid-summer, then fall through autumn back to a winter trough. The
+medians track the means closely month by month, which is a useful
+sign: the seasonal pattern is not just being driven by the heavy
+right tail. If summer were only "big airports get bigger," the medians
+would barely move.
+
+**Seasonal line plot.**
+
+```{r viz-monthly-trend, fig.cap = "Mean daily flights per airport by month, split by calendar year."}
+airport |>
+  mutate(MONTH_MON = fct_reorder(MONTH_MON, MONTH_NUM)) |>
+  group_by(MONTH_MON, YEAR) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = MONTH_MON, y = mean_flights,
+             group = factor(YEAR), color = factor(YEAR))) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Average daily flight volume by month",
+    subtitle = "Summer peak visible across both years",
+    x = "Month", y = "Mean daily flights per airport", color = "Year"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+The two yearly traces overlap closely outside summer, which suggests
+the seasonal pattern is stable and not an artifact of one unusual
+year.
+
+**Summary by country (top 10 by mean traffic).**
+
+```{r summary-by-country}
+top_countries <- airport |>
+  group_by(STATE_NAME) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  slice_max(mean_flights, n = 10) |>
+  pull(STATE_NAME)
+
+airport |>
+  filter(STATE_NAME %in% top_countries) |>
+  group_by(STATE_NAME) |>
+  summarize(
+    n_records = n(),
+    n_airports = n_distinct(APT_ICAO),
+    mean_daily = mean(FLT_TOT_1, na.rm = TRUE),
+    median_daily = median(FLT_TOT_1, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(mean_daily))
+```
+
+The `n_airports` column is the key one. Some countries near the top
+have only one or two airports in the sample, so their "country effect"
+is the identity of one big airport. This is the exact
+reason the regression has to include airport.
+
+**Boxplot by country.**
+
+```{r viz-country-boxplot, fig.cap = "Daily flight totals for the 10 countries with the highest mean traffic."}
+airport |>
+  filter(STATE_NAME %in% top_countries) |>
+  mutate(STATE_NAME = fct_reorder(STATE_NAME, FLT_TOT_1, .fun = median)) |>
+  ggplot(aes(x = STATE_NAME, y = FLT_TOT_1)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.6, outlier.alpha = 0.1) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Daily flight totals by country (top 10 by mean traffic)",
+    subtitle = "Boxes show variation within each country's airports",
+    x = NULL, y = "Daily flight total"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+The boxes are wide and the whiskers reach far for countries that host
+both a major hub and several regional airports. The very low medians
+next to long upper tails are the visual signature of mega-hub outliers
+pulling the mean upward.
+
+**Top 15 airports by mean daily traffic.**
+
+```{r viz-top-airports, fig.cap = "The fifteen busiest airports drive the right tail and much of the apparent country variation."}
+airport |>
+  group_by(APT_ICAO, STATE_NAME) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  slice_max(mean_flights, n = 15) |>
+  mutate(APT_ICAO = fct_reorder(APT_ICAO, mean_flights)) |>
+  ggplot(aes(x = APT_ICAO, y = mean_flights, fill = STATE_NAME)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "The 15 busiest airports drive the right tail",
+    subtitle = "Bars colored by country show how few states host the largest hubs",
+    x = "Airport (ICAO code)", y = "Mean daily flight total", fill = "Country"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+This is the plot I most wanted before fitting the model. A small
+number of hubs sit far above the rest, and each is the reason its
+country looks busy on the boxplot. Including airport as a control is
+what makes the country and month coefficients interpretable as
+something other than "where the hubs live."
+
+### Proposed methods
+
+I plan to fit two linear regressions, deliberately, to make the
+confound visible. The first, `FLT_TOT_1 ~ MONTH_MON + STATE_NAME +
+factor(YEAR)`, lets country and month compete for explanatory power on
+their own; its coefficients conflate "country effects" with "which big
+airports are in our sample." The second, `FLT_TOT_1 ~ MONTH_MON +
+APT_ICAO + factor(YEAR)`, uses airport-level fixed effects. Because
+every airport sits in exactly one country, including `APT_ICAO` makes
+`STATE_NAME` redundant, so the country effect is not merely shrunk but
+unidentifiable, and I drop it from the second model on purpose. What
+the second model gives me cleanly is the month coefficients holding
+airport identity fixed. If residual diagnostics flag
+heteroskedasticity from the right skew, I refit on `log(FLT_TOT_1 + 1)`
+and reinterpret the coefficients as approximate percent changes.
+
+### Hypothesized results
+
+I expect month to be the dominant signal in the second model, with
+summer months (June to August) showing meaningfully higher daily flight
+totals than January, and a secondary autumn dip. I expect the apparent
+country differences in the first model to be mostly absorbed by airport
+in the second, indicating that what looks like a "country effect" in
+the boxplot is largely a story about which hubs the sample contains.
+Results consistent with that prediction would show significant positive
+summer month coefficients that stay stable across both models, and a
+much larger R² for the second model driven by airport rather than
+country. If summer effects collapse once airport is controlled, the
+seasonal signal is itself a hub story rather than a Europe-wide pattern.

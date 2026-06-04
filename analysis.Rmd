@@ -1,0 +1,483 @@
+---
+title: "Full Analysis: Seasonality and Geography of Airport Flight Traffic"
+author: "Kaden Zhu"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.width = 8, fig.height = 4.5
+)
+```
+
+```{r packages}
+library(tidyverse)
+library(scales)
+library(broom)
+library(knitr)
+library(fixest)   # fast fixed-effects regression (install.packages("fixest"))
+```
+
+```{r helpers, include = FALSE}
+# Tidy a coefficient table from either an lm (model1) or a fixest
+# object (model2, model2_log), so the rest of the document treats them
+# the same way.
+tidy_coefs <- function(m) {
+  if (inherits(m, "fixest")) {
+    ct <- fixest::coeftable(m)
+    tibble(
+      term      = rownames(ct),
+      estimate  = ct[, 1],
+      std.error = ct[, 2],
+      statistic = ct[, 3],
+      p.value   = ct[, 4]
+    )
+  } else {
+    broom::tidy(m)
+  }
+}
+
+# Overall R-squared for either object type.
+get_r2 <- function(m) {
+  if (inherits(m, "fixest")) unname(fixest::r2(m, type = "r2"))
+  else broom::glance(m)$r.squared
+}
+```
+
+# 1. Load and combine the data
+
+```{r load}
+airport_2025 <- read_csv("data/airport_traffic_2025.csv")
+airport_2026 <- read_csv("data/airport_traffic_2026.csv")
+
+airport <- bind_rows(airport_2025, airport_2026) |>
+  mutate(
+    MONTH_MON = fct_reorder(MONTH_MON, MONTH_NUM),
+    YEAR = factor(YEAR)
+  )
+
+dim(airport)
+```
+
+The combined frame holds every airport-day record from both years
+side by side. Converting `MONTH_MON` to an ordered factor keeps the
+calendar order on every plot and in the regression. Treating `YEAR`
+as a factor with two levels matches what the linear model needs.
+
+# 2. Data quality check
+
+```{r missingness}
+airport |>
+  summarize(across(everything(), ~ sum(is.na(.x)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") |>
+  arrange(desc(n_missing))
+```
+
+```{r counts}
+tibble(
+  n_records = nrow(airport),
+  n_airports = n_distinct(airport$APT_ICAO),
+  n_countries = n_distinct(airport$STATE_NAME),
+  n_dates = n_distinct(airport$FLT_DATE)
+)
+```
+
+I read missingness first because anything substantial in `FLT_TOT_1`
+would change the interpretation of every summary statistic below.
+The record counts confirm the dataset's scale: hundreds of airports
+across a couple of years gives us a sample large enough to fit a
+regression with airport-level fixed effects without running out of
+degrees of freedom.
+
+# 3. Exploratory data analysis
+
+## 3.1 Outcome distribution
+
+```{r dist-hist}
+ggplot(airport, aes(x = FLT_TOT_1)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "white") +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Daily flight totals: heavily right-skewed",
+    x = "Daily flight total (FLT_TOT_1)",
+    y = "Number of airport-days"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r dist-log}
+ggplot(airport, aes(x = FLT_TOT_1 + 1)) +
+  geom_histogram(bins = 60, fill = "darkorange", color = "white") +
+  scale_x_log10(labels = comma) +
+  labs(
+    title = "Same distribution on a log10 scale",
+    subtitle = "Approximately symmetric, a useful sign for residual diagnostics",
+    x = "Daily flight total (log10 scale)",
+    y = "Number of airport-days"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+The raw histogram has the long right tail I expected from the
+boxplots in the proposal. On a log scale the distribution looks
+roughly symmetric, which tells me a log transformation of the
+outcome is a sensible thing to keep in reserve in case the regression
+residuals misbehave.
+
+## 3.2 Overall and grouped summaries
+
+```{r summary-overall}
+airport |>
+  summarize(
+    n = n(),
+    mean = mean(FLT_TOT_1, na.rm = TRUE),
+    median = median(FLT_TOT_1, na.rm = TRUE),
+    sd = sd(FLT_TOT_1, na.rm = TRUE),
+    p10 = quantile(FLT_TOT_1, 0.10, na.rm = TRUE),
+    p90 = quantile(FLT_TOT_1, 0.90, na.rm = TRUE),
+    max = max(FLT_TOT_1, na.rm = TRUE)
+  ) |>
+  kable(digits = 1, caption = "Overall summary of daily flight totals.")
+```
+
+The mean is well above the median and the 90th percentile is several
+times the median. This is the right tail in numbers rather than in a
+picture: the typical airport-day in this sample is much quieter than
+the average suggests.
+
+```{r summary-month}
+airport |>
+  group_by(MONTH_MON) |>
+  summarize(
+    n = n(),
+    mean = mean(FLT_TOT_1, na.rm = TRUE),
+    median = median(FLT_TOT_1, na.rm = TRUE),
+    sd = sd(FLT_TOT_1, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  kable(digits = 1, caption = "Daily flight totals by month.")
+```
+
+Across both years the monthly means rise from a winter low through
+spring, crest in mid-summer, and fall back through autumn. The medians track the means too. The seasonal pattern is not an
+artifact of the right tail.
+
+```{r summary-country}
+top_countries <- airport |>
+  group_by(STATE_NAME) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  slice_max(mean_flights, n = 10) |>
+  pull(STATE_NAME)
+
+airport |>
+  filter(STATE_NAME %in% top_countries) |>
+  group_by(STATE_NAME) |>
+  summarize(
+    n = n(),
+    n_airports = n_distinct(APT_ICAO),
+    mean = mean(FLT_TOT_1, na.rm = TRUE),
+    median = median(FLT_TOT_1, na.rm = TRUE),
+    sd = sd(FLT_TOT_1, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(mean)) |>
+  kable(digits = 1, caption = "Daily flight totals for the top 10 countries by mean.")
+```
+
+The `n_airports` column is the key one in this table. The countries
+at the top of the ranking are not necessarily countries with many
+busy airports. Some have only one or two airports in the sample, and
+those airports happen to be very busy. That is exactly the confound
+the regression is built to address.
+
+## 3.3 Seasonal pattern
+
+```{r plot-month}
+airport |>
+  group_by(MONTH_MON, YEAR) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = MONTH_MON, y = mean_flights,
+             group = YEAR, color = YEAR)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Average daily flight volume by month",
+    subtitle = "Same seasonal shape in both calendar years",
+    x = "Month",
+    y = "Mean daily flights per airport",
+    color = "Year"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+The two yearly lines move together across the calendar, so the
+seasonal effect is reproducible rather than year-specific. Where the
+lines diverge by a few flights per airport, that is the size of the
+year effect we will recover in the regression.
+
+## 3.4 Country comparison
+
+```{r plot-country}
+airport |>
+  filter(STATE_NAME %in% top_countries) |>
+  mutate(STATE_NAME = fct_reorder(STATE_NAME, FLT_TOT_1, .fun = median)) |>
+  ggplot(aes(x = STATE_NAME, y = FLT_TOT_1)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.6, outlier.alpha = 0.1) +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Daily flight totals by country (top 10 by mean)",
+    subtitle = "Wide spreads come from hub-vs-regional variation within countries",
+    x = NULL,
+    y = "Daily flight total"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+The width of each box is a within-country story. Countries with both
+a major hub and several regional airports, such as Germany, the UK, and Italy,
+get the widest spreads because the same country produces both
+1,500-flight days at the hub and 50-flight days at small airports.
+
+## 3.5 The airport-level confound made visible
+
+```{r plot-airports}
+airport |>
+  group_by(APT_ICAO, STATE_NAME) |>
+  summarize(mean_flights = mean(FLT_TOT_1, na.rm = TRUE), .groups = "drop") |>
+  slice_max(mean_flights, n = 15) |>
+  mutate(APT_ICAO = fct_reorder(APT_ICAO, mean_flights)) |>
+  ggplot(aes(x = APT_ICAO, y = mean_flights, fill = STATE_NAME)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "The 15 busiest airports dominate the right tail",
+    subtitle = "A handful of hubs across a handful of countries",
+    x = "Airport (ICAO)",
+    y = "Mean daily flight total",
+    fill = "Country"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+A small set of hubs sits far above the rest. When the boxplots above
+made a country look busy, this plot is usually the reason. The
+regression in section 4 puts these airports in as fixed effects so
+that month and year coefficients are estimated after holding airport
+identity constant.
+
+# 4. Regression models
+
+## 4.1 Model 1, without airport control
+
+```{r model1}
+model1 <- lm(FLT_TOT_1 ~ MONTH_MON + STATE_NAME + YEAR, data = airport)
+
+glance(model1) |>
+  select(r.squared, adj.r.squared, sigma, statistic, p.value, df, nobs) |>
+  kable(digits = 3, caption = "Model 1 fit statistics.")
+```
+
+```{r model1-coefs}
+tidy(model1) |>
+  filter(str_starts(term, "MONTH_MON") | term == "YEAR2026") |>
+  kable(digits = 2, caption = "Model 1: month and year coefficients (intercept = January, baseline year 2025).")
+```
+
+Model 1 is the naive picture. Its R² answers "how much of the
+variation in daily flights can month, country, and year jointly
+explain?" Its month coefficients give the average shift in daily
+flights for each month relative to January, ignoring the fact that
+the country mix doing those summer flights skews toward hub-heavy
+states.
+
+## 4.2 Model 2, with airport fixed effects
+
+```{r model2}
+# Absorb airport as a fixed effect instead of building 330 dummy
+# columns, so the model fits quickly on the full data.
+model2 <- feols(FLT_TOT_1 ~ MONTH_MON + YEAR | APT_ICAO, data = airport)
+
+tibble(
+  r.squared        = get_r2(model2),
+  within.r.squared = fixest::r2(model2, type = "wr2"),
+  n_airports_fe    = model2$fixef_sizes[["APT_ICAO"]],
+  nobs             = nobs(model2)
+) |>
+  kable(digits = 3, caption = "Model 2 fit statistics (airport absorbed as fixed effect).")
+```
+
+```{r model2-coefs}
+tidy_coefs(model2) |>
+  filter(str_starts(term, "MONTH_MON") | term == "YEAR2026") |>
+  kable(digits = 2, caption = "Model 2: month and year coefficients after controlling for airport.")
+```
+
+Model 2 is the model I actually want to interpret. Absorbing airport
+as a fixed effect soaks up the "which hubs are in the sample" effect,
+so the month coefficients here estimate the average within-airport
+seasonal effect: how much busier (or quieter) an airport is in a
+given month compared to its own January baseline. `STATE_NAME` is
+not in this model. Country is fully determined by airport, so
+including both would be perfectly collinear.
+
+## 4.3 Comparing the two models
+
+```{r compare}
+bind_rows(
+  tidy_coefs(model1) |> mutate(model = "Model 1 (no airport control)"),
+  tidy_coefs(model2) |> mutate(model = "Model 2 (airport fixed effects)")
+) |>
+  filter(str_starts(term, "MONTH_MON")) |>
+  mutate(month = str_remove(term, "MONTH_MON"),
+         month = fct_reorder(month, match(month, levels(airport$MONTH_MON)))) |>
+  ggplot(aes(x = month, y = estimate, color = model, group = model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = estimate - 1.96 * std.error,
+                    ymax = estimate + 1.96 * std.error),
+                width = 0.2, alpha = 0.6) +
+  labs(
+    title = "Month coefficients are stable across both models",
+    subtitle = "Reference month is January; bars are 95% confidence intervals",
+    x = "Month", y = "Estimated change in daily flights vs January",
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+If the seasonal pattern were really a story about hub composition,
+the teal line (Model 2) would flatten. The closeness of the two
+lines shows the monthly effect is within-airport seasonal variation, not the byproduct of which
+countries happen to have records that month.
+
+## 4.4 Diagnostics
+
+```{r diagnostics, fig.width = 8, fig.height = 4, dev = "png", dpi = 150}
+# plot(model2) would compute leverage for every observation, slow at
+# this size. Residuals and fitted values are already stored, so sample
+# 5000 points from those for the diagnostic plots.
+set.seed(1)
+idx <- sample(seq_len(nrow(airport)), min(5000, nrow(airport)))
+fit <- fitted(model2)[idx]
+res <- resid(model2)[idx]
+
+par(mfrow = c(1, 2))
+plot(fit, res, pch = ".", col = rgb(0, 0, 0, 0.3),
+     xlab = "Fitted", ylab = "Residual", main = "Residuals vs fitted")
+abline(h = 0, col = "red")
+qqnorm(res, pch = ".", main = "Normal Q-Q")
+qqline(res, col = "red")
+par(mfrow = c(1, 1))
+```
+
+The residual-vs-fitted plot is where the right skew shows up: if the
+spread of residuals fans out as fitted values grow, that is
+heteroskedasticity, and it is the reason I refit on the log scale
+below and report those coefficients as percent changes. The Q-Q plot
+checks whether the residuals are roughly normal. Heavy tails there
+point in the same direction.
+
+## 4.5 Log-scale robustness check
+
+```{r model2-log}
+model2_log <- feols(log(FLT_TOT_1 + 1) ~ MONTH_MON + YEAR | APT_ICAO, data = airport)
+
+tibble(
+  r.squared        = get_r2(model2_log),
+  within.r.squared = fixest::r2(model2_log, type = "wr2"),
+  nobs             = nobs(model2_log)
+) |>
+  kable(digits = 3,
+        caption = "Model 2 refit on log(FLT_TOT_1 + 1). Coefficients are approximate proportional changes.")
+
+tidy_coefs(model2_log) |>
+  filter(str_starts(term, "MONTH_MON") | term == "YEAR2026") |>
+  mutate(pct_change = (exp(estimate) - 1) * 100) |>
+  kable(digits = 3, caption = "Log-scale month and year coefficients, with implied percent change.")
+```
+
+On the log scale a coefficient of 0.10 for July means daily traffic
+at an average airport runs roughly 10% higher in July than in January.
+I report this version in the executive summary and slides. The log
+form drops the assumption of equal additive effects across airports
+of widely different sizes.
+
+# 5. Interpretation in domain terms
+
+The two models point to one conclusion. Daily flight volume rises and
+falls with the season. Summer months sit well above the January
+baseline at the average airport. The country mix in the sample does
+not drive this shape. Month coefficients barely move when airport
+fixed effects enter the model. July adds about 52 flights in Model 1
+and about 54 in Model 2, near-identical figures.
+
+The country effect behaves the opposite way. Model 1 ranks Denmark
+and Finland near the top. The country table explains why. Denmark
+contributes one airport, Copenhagen. Finland contributes one airport,
+Helsinki. Their high averages describe two busy hubs, not two busy
+countries. Once airport enters the model, those country signals fold
+into the airport fixed effects and lose meaning.
+
+The year coefficient compares 2026 to 2025 with month and airport held
+constant. The effect is small and sensitive to scale. In the level
+model, 2026 runs about 2 flights per day above 2025. In the log model,
+2026 runs about 2 percent below. The two specifications split on sign
+and agree on size, close to zero. In practical terms, 2025 and 2026
+look alike.
+
+# 6. Limitations
+
+Four limitations shape the conclusions.
+
+The geographic scope is narrow. The source is EUROCONTROL coverage.
+The findings describe European IFR traffic, not global aviation. North
+American, East Asian, and African airports sit outside the sample.
+
+The outcome mixes flight types. Daily total movements combine
+passenger, cargo, business, and general aviation. A 200-movement day
+at a cargo hub and a 200-movement day at a tourist airport count the
+same. Separating them needs data the EUROCONTROL daily extract does
+not provide.
+
+Two years limits the seasonal claim. The pattern repeats across 2025
+and 2026, which rules out a one-year fluke. Two years still does not
+separate season from year-specific shocks. A strike, a volcanic
+closure, or a geopolitical event in one summer would enter the model
+as a month or year effect with no warning sign.
+
+The design is observational. Airport fixed effects remove
+airport-level confounding, not all confounding. The data supports one
+claim. July runs busier than January at the average airport. The data
+does not support a causal claim about summer demand.
+
+# 7. What I would do next
+
+Three extensions would strengthen the work.
+
+Split the outcome into departures and arrivals. This would show
+whether tourism creates timing asymmetries, more arrivals in early
+summer and more departures in late summer at sun destinations.
+
+Add country-level predictors. GDP per capita, tourist-arrival share,
+and public-holiday calendars would give the country comparison real
+content. The current model drops country because airport absorbs the
+country signal, so these predictors would need a design without
+airport fixed effects.
+
+Fit a mixed-effects model with random airport intercepts. This would
+return the same airport-controlled month estimates and report how much
+unexplained variance sits at the airport level versus the day level.

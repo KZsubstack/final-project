@@ -1,0 +1,136 @@
+---
+title: "Seasonality and Geography of Airport Flight Traffic"
+author: "by Kaden Zhu"
+output: github_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(broom)
+library(fixest)   # install.packages("fixest")
+```
+
+```{r load-data, echo = FALSE, message = FALSE}
+airport <- bind_rows(
+  read_csv("data/airport_traffic_2025.csv"),
+  read_csv("data/airport_traffic_2026.csv")
+) |>
+  mutate(
+    MONTH_MON = fct_reorder(MONTH_MON, MONTH_NUM),
+    YEAR = factor(YEAR)
+  )
+
+median_daily <- round(median(airport$FLT_TOT_1, na.rm = TRUE), 0)
+mean_daily   <- round(mean(airport$FLT_TOT_1, na.rm = TRUE), 0)
+n_apts       <- n_distinct(airport$APT_ICAO)
+n_states     <- n_distinct(airport$STATE_NAME)
+
+# Model 1 is small (country has ~30 levels), so plain lm is fine.
+# Models 2 use feols to absorb the 331-level airport factor efficiently.
+model1     <- lm(FLT_TOT_1 ~ MONTH_MON + STATE_NAME + YEAR, data = airport)
+model2     <- feols(FLT_TOT_1 ~ MONTH_MON + YEAR | APT_ICAO, data = airport)
+model2_log <- feols(log(FLT_TOT_1 + 1) ~ MONTH_MON + YEAR | APT_ICAO, data = airport)
+
+m1_r2 <- round(glance(model1)$r.squared, 2)
+m2_r2 <- round(unname(fixest::r2(model2, type = "r2")), 2)
+jul_pct <- round((exp(coef(model2_log)[["MONTH_MONJUL"]]) - 1) * 100, 0)
+```
+
+## Summary
+
+This project asks whether daily flight totals at international
+airports depend on the time of year and the country an airport sits
+in, or whether the apparent role of those factors comes down to which
+airports the data happens to include. Seasonality and country mix are exactly the levers that
+airport planners, tourism boards, and aviation-emissions analysts
+reach for, so getting their relative importance right matters.
+Country effects in aviation data often turn out to be hub-composition
+effects rather than real country differences. I built the analysis
+from the start to separate the two.
+
+The data is a Kaggle release of EUROCONTROL-style airport traffic
+statistics: one row per airport per day, recording total
+instrument-flight-rules movements, across the 2025 and 2026 calendar
+years. After combining the two yearly files the sample covers
+`r n_apts` airports across `r n_states` countries, weighted heavily
+toward Europe with a few neighboring states. The outcome variable is
+`FLT_TOT_1`, daily total movements. The predictors of interest are
+month and country, with airport ICAO code and calendar year as
+controls.
+
+Exploratory work came first. A histogram of the outcome showed a
+strong right skew: the typical airport-day runs around `r median_daily`
+movements, but the mean is `r mean_daily`, pulled upward by a handful
+of mega-hubs running well over a thousand a day. A month-by-month line
+plot, drawn separately for each year, showed a clear and reproducible
+seasonal arc: traffic climbs from a winter low through spring, crests
+in mid-summer, and falls back through autumn, with the two years
+tracing almost identical shapes. A bar chart of the fifteen busiest
+airports made the central confound visible before any model was fit.
+A small set of hubs sits far above everything else, and each one is
+the reason its country looks busy in a country-level comparison.
+
+The modeling stage used two linear regressions on purpose, side by
+side. The first regressed daily flights on month, country, and year
+with no airport control. The second swapped country out for
+airport-level fixed effects, since every airport sits in exactly one
+country and including both would be perfectly collinear. The contrast
+between the two is the whole point. If the seasonal effect is real and
+operates within airports, its month coefficients should barely move
+when airport fixed effects are introduced. If the country differences
+are mostly a hub-composition story, their apparent size in the first
+model should be absorbed by the airport dummies in the second. A
+log-transformed version of the second model served as a robustness
+check against the right tail in the outcome.
+
+The results came out cleanly on both counts. The month coefficients
+were nearly identical across the two models, which is strong
+evidence that seasonality is a real within-airport effect rather
+than an artifact of which countries had records in which months. In
+the log-scale model, July traffic at the typical airport runs roughly
+`r jul_pct`% above its own January baseline, holding airport and year
+fixed, and the effect is highly significant given the large
+sample. The country story went the opposite way, exactly as
+predicted: countries that topped the raw rankings turned out to be
+single-hub stories, with the "country effect" dissolving once airport
+identity entered the model. The R² rose from about `r m1_r2` in the
+first model to `r m2_r2` in the second, and almost all of that jump is
+the airport fixed effects. Most of the variation in daily flights
+sits between airports. Seasonality is a real but smaller effect on
+top of each airport's own baseline.
+
+Four limitations bound these conclusions. The geographic scope is
+mostly European, so the findings describe EUROCONTROL airspace
+rather than global aviation. The outcome lumps passenger, cargo,
+business, and general aviation into one daily count, so the analysis
+cannot speak to the mode mix behind the seasonal pattern even though
+the summer peak strongly suggests leisure travel. Two calendar years
+confirm a stable seasonal pattern but cannot separate seasonality from
+one-off events such as strikes or weather disruptions. And the data is
+observational, so even with airport fixed effects the right verb is
+"associated with," not "caused by." A natural next step would be
+splitting the outcome into arrivals and departures and adding
+country-level covariates like tourism share and holiday calendars,
+which the current model cannot use because airport absorbs country.
+
+## Presentation
+
+Presentation can be found [here](presentation/presentation.html).
+
+## Data
+
+European Organisation for the Safety of Air Navigation (EUROCONTROL).
+*Airport Traffic Daily Movements, 2025-2026* [data set]. Distributed
+via Kaggle. Retrieved [add your retrieval date], from
+[add the Kaggle dataset URL you downloaded from].
+
+## References
+
+- European Organisation for the Safety of Air Navigation
+  (EUROCONTROL). *Airport Traffic* statistics. [add Kaggle URL],
+  retrieved [date].
+- Wickham, H., et al. (2019). Welcome to the tidyverse. *Journal of
+  Open Source Software*, 4(43), 1686.
+- Robinson, D., Hayes, A., & Couch, S. (2023). *broom: Convert
+  Statistical Objects into Tidy Tibbles.* R package.
